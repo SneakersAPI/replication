@@ -34,3 +34,10 @@ go run . [-only=<table_name>] [-config=<path>]
 
 - `-only=<table_name>`: Avoid running all tables and only process the one specified.
 - `-config=<path>`: Path to the configuration file. Defaults to `config.yml`.
+
+## Docker
+
+```bash
+docker build -t replication .
+docker run replication [-only=<table_name>] [-config=<path>]
+```
