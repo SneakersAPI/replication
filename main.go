@@ -6,10 +6,12 @@ import (
 	"fmt"
 	"reflect"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/ClickHouse/clickhouse-go/v2"
 	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	log "github.com/sirupsen/logrus"
@@ -20,6 +22,7 @@ var ctx = context.Background()
 func main() {
 	only := flag.String("only", "", "Only replicate one table by name")
 	configPath := flag.String("config", "config.yml", "Path to the configuration file")
+	drop := flag.String("drop", "", "Drop a table by name")
 	flag.Parse()
 
 	var config Config
@@ -57,15 +60,23 @@ func main() {
 		start := time.Now()
 
 		if table.Cursor.Column != "" {
-			if table.Cursor.LastSync.IsZero() {
+			if table.Cursor.LastSync.IsZero() || *drop == table.Source {
 				log.Warn("No last sync date found, resetting cursor")
-				config.Tables[idx].Cursor.LastSync = time.Time{}
+				table.Cursor.LastSync = time.Time{}
 			}
 
 			log.WithFields(log.Fields{
 				"column":   table.Cursor.Column,
 				"lastSync": table.Cursor.LastSync,
 			}).Info("Resuming from cursor")
+		}
+
+		if *drop != "" && *drop == table.Source {
+			log.WithField("table", table.Source).Info("Dropping table")
+
+			if _, err := db.Exec(ctx, fmt.Sprintf("DROP TABLE IF EXISTS %s", table.Destination)); err != nil {
+				log.WithError(err).Errorln("Failed to drop table")
+			}
 		}
 
 		if err := SynchronizeTable(config, table, conn, db); err != nil {
@@ -79,7 +90,7 @@ func main() {
 
 			log.WithFields(log.Fields{
 				"column":   table.Cursor.Column,
-				"lastSync": table.Cursor.LastSync,
+				"lastSync": config.Tables[idx].Cursor.LastSync,
 			}).Info("Updated cursor")
 		}
 
@@ -98,54 +109,98 @@ func main() {
 
 // SynchronizeTable synchronizes a table from ClickHouse to Postgres
 func SynchronizeTable(config Config, table Table, conn driver.Conn, db *pgxpool.Pool) error {
-	if err := CreatePostgresTable(table, db, true); err != nil {
+	if err := CreatePostgresTable(table, db); err != nil {
 		return err
 	}
 
 	columns := table.GetDestinationColumns()
+	batches := make(chan [][]interface{})
 
-	total, err := Batching(table, conn, config.BatchSize, func(batch [][]interface{}) error {
-		log.WithField("batch", len(batch)).Info("Inserting batch")
+	go func() {
+		defer close(batches)
+		total, err := Batching(table, conn, config.BatchSize, func(batch [][]interface{}) error {
+			batches <- batch
+			return nil
+		})
 
-		_, err := db.CopyFrom(
-			ctx,
-			pgx.Identifier{table.Destination + "_tmp"},
-			columns,
-			pgx.CopyFromRows(batch),
-		)
+		if err != nil {
+			log.WithError(err).Errorln("Failed to batch")
+		}
 
-		return err
-	})
-	if err != nil {
-		return err
+		log.WithField("total", total).Infoln("Selecting data completed")
+	}()
+
+	wg := sync.WaitGroup{}
+	for batch := range batches {
+		wg.Add(1)
+
+		go func(batch [][]interface{}) {
+			defer wg.Done()
+			log.WithField("batch", len(batch)).Info("Inserting batch")
+
+			conn, err := db.Acquire(ctx)
+			if err != nil {
+				log.WithError(err).Errorln("Failed to acquire connection")
+				return
+			}
+			defer conn.Release()
+
+			tableName, err := MakeTemporaryTable(table, conn)
+			if err != nil {
+				log.WithError(err).Errorln("Failed to make temporary table")
+				return
+			}
+
+			_, err = conn.CopyFrom(
+				ctx,
+				pgx.Identifier{tableName},
+				columns,
+				pgx.CopyFromRows(batch),
+			)
+			if err != nil {
+				log.WithError(err).Errorln("Failed to insert batch")
+			}
+
+			if err := MoveTemporaryTable(table, conn, tableName); err != nil {
+				log.WithError(err).Errorln("Failed to move temporary table")
+			}
+		}(batch)
 	}
 
-	log.WithField("total", total).Infoln("Batching completed")
+	wg.Wait()
 
-	if err := MoveTemporaryTable(table, db); err != nil {
-		return err
-	}
-
-	log.Infoln("Moved temporary table to main table")
+	log.Infoln("Data inserted")
 
 	return nil
 }
 
 // MoveTemporaryTable moves the temporary table to the main table
-func MoveTemporaryTable(table Table, db *pgxpool.Pool) error {
+func MoveTemporaryTable(table Table, conn *pgxpool.Conn, tableName string) error {
 	updateQuery := []string{}
 	for _, column := range table.GetDestinationColumns() {
 		updateQuery = append(updateQuery, fmt.Sprintf("%s = EXCLUDED.%s", column, column))
 	}
 
-	_, err := db.Exec(ctx, fmt.Sprintf(`
+	log.WithField("source", tableName).Info("Moving temporary table")
+	_, err := conn.Exec(ctx, fmt.Sprintf(`
 		INSERT INTO %s
-		SELECT * FROM %s_tmp
+		SELECT DISTINCT ON (%s) * FROM %s
 		ON CONFLICT (%s) DO UPDATE SET
 		%s;
-	`, table.Destination, table.Destination, strings.Join(table.GetPrimaryKey(), ", "), strings.Join(updateQuery, ", ")))
+	`, table.Destination,
+		strings.Join(table.GetPrimaryKey(), ", "),
+		tableName,
+		strings.Join(table.GetPrimaryKey(), ", "),
+		strings.Join(updateQuery, ", "),
+	))
 
-	return err
+	if err != nil {
+		log.WithError(err).Errorln("Failed to move temporary table")
+	}
+
+	log.WithField("table", tableName).Infoln("Moved temporary table")
+
+	return nil
 }
 
 // GetScannerValues guesses the scanner values from the column types
@@ -174,7 +229,7 @@ func GetScannerValues(columnTypes []driver.ColumnType) []interface{} {
 }
 
 // CreatePostgresTable creates a table in Postgres
-func CreatePostgresTable(table Table, db *pgxpool.Pool, temporary bool) error {
+func CreatePostgresTable(table Table, db *pgxpool.Pool) error {
 	columns := []string{}
 
 	for _, column := range table.Columns {
@@ -216,17 +271,19 @@ func CreatePostgresTable(table Table, db *pgxpool.Pool, temporary bool) error {
 		}
 	}
 
-	if temporary {
-		_, err = db.Exec(ctx, fmt.Sprintf(
-			`CREATE TEMPORARY TABLE %s_tmp (LIKE %s INCLUDING DEFAULTS)`,
-			table.Destination,
-			table.Destination,
-		))
-
-		if err != nil {
-			return err
-		}
-	}
-
 	return nil
+}
+
+// MakeTemporaryTable creates a temporary table
+func MakeTemporaryTable(table Table, conn *pgxpool.Conn) (string, error) {
+	rnd := uuid.New().String()[:8]
+	tableName := fmt.Sprintf("%s_%s_tmp", table.Destination, rnd)
+
+	_, err := conn.Exec(ctx, fmt.Sprintf(
+		`CREATE TEMPORARY TABLE %s (LIKE %s INCLUDING DEFAULTS)`,
+		tableName,
+		table.Destination,
+	))
+
+	return tableName, err
 }
