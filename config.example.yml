@@ -1,0 +1,26 @@
+batch_size: 10_000 # Number of rows to process at once
+postgres_url: "postgres://postgres:postgres@localhost:5432/postgres" # PostgreSQL DSN
+clickhouse_url: "clickhouse://localhost:9000" # ClickHouse DSN
+tables:
+  - source: variants # ClickHouse table name
+    destination: variants # PostgreSQL table name
+    columns:
+      - source: Id # ClickHouse column name
+        destination: id # PostgreSQL column name
+        type: text # PostgreSQL column type
+        primary: true # If true, this column is used as a primary key
+      - source: Price
+        destination: price
+        type: float
+        primary: false
+      - source: Currency
+        destination: currency
+        type: text
+        primary: false
+      - source: Size
+        destination: size
+        type: text
+        primary: false
+    cursor:
+      column: "" # ClickHouse column name used as a cursor
+      last_sync: 0001-01-01T00:00:00Z # Last sync date
