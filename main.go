@@ -4,7 +4,6 @@ import (
 	"context"
 	"flag"
 	"fmt"
-	"reflect"
 	"strings"
 	"sync"
 	"time"
@@ -201,31 +200,6 @@ func MoveTemporaryTable(table Table, conn *pgxpool.Conn, tableName string) error
 	log.WithField("table", tableName).Infoln("Moved temporary table")
 
 	return nil
-}
-
-// GetScannerValues guesses the scanner values from the column types
-func GetScannerValues(columnTypes []driver.ColumnType) []interface{} {
-	log.Info("Guessing scanner values")
-	scannerVal := make([]interface{}, len(columnTypes))
-	for i := range scannerVal {
-		scannerVal[i] = reflect.New(columnTypes[i].ScanType()).Interface()
-
-		value := reflect.ValueOf(scannerVal[i]).Elem().Kind()
-		if value == reflect.Ptr {
-			scannerVal[i] = reflect.New(columnTypes[i].ScanType().Elem()).Interface()
-		}
-		if value == reflect.Slice {
-			scannerVal[i] = reflect.MakeSlice(columnTypes[i].ScanType(), 0, 0).Interface()
-		}
-
-		log.WithFields(log.Fields{
-			"index": i,
-			"name":  columnTypes[i].Name(),
-			"type":  columnTypes[i].ScanType(),
-			"value": value,
-		}).Info("Guessed scanner value")
-	}
-	return scannerVal
 }
 
 // CreatePostgresTable creates a table in Postgres

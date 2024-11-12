@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
+	log "github.com/sirupsen/logrus"
 )
 
 // Batching reads rows from ClickHouse and sends them to the callback function
@@ -65,4 +66,34 @@ func Batching(table Table, conn driver.Conn, batchSize int, onBatch func([][]int
 	}
 
 	return total, nil
+}
+
+// GetScannerValues guesses the scanner values from the column types
+func GetScannerValues(columnTypes []driver.ColumnType) []interface{} {
+	log.Info("Guessing scanner values")
+	scannerVal := make([]interface{}, len(columnTypes))
+	for i := range scannerVal {
+		scannerVal[i] = reflect.New(columnTypes[i].ScanType()).Interface()
+
+		value := reflect.ValueOf(scannerVal[i]).Elem().Kind()
+		if value == reflect.Ptr {
+			scannerVal[i] = reflect.New(columnTypes[i].ScanType().Elem()).Interface()
+		}
+
+		if value == reflect.Slice {
+			scannerVal[i] = reflect.MakeSlice(columnTypes[i].ScanType(), 0, 0).Interface()
+		}
+
+		if value == reflect.Map {
+			scannerVal[i] = reflect.MakeMap(columnTypes[i].ScanType()).Interface()
+		}
+
+		log.WithFields(log.Fields{
+			"index": i,
+			"name":  columnTypes[i].Name(),
+			"type":  columnTypes[i].ScanType(),
+			"value": value,
+		}).Info("Guessed scanner value")
+	}
+	return scannerVal
 }
