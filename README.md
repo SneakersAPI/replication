@@ -26,6 +26,9 @@ Configuration is done via a YAML file. See `config.example.yml` for reference.
 ## Running
 
 ```bash
+export CLICKHOUSE_DSN=<clickhouse_dsn>
+export DATABASE_URL=<database_url>
+
 go run . [-only=<table_name>] [-drop=<table_name>] [-config=<path>]
 ```
 
@@ -37,5 +40,9 @@ go run . [-only=<table_name>] [-drop=<table_name>] [-config=<path>]
 
 ```bash
 docker build -t replication .
-docker run replication [-only=<table_name>] [-config=<path>]
+docker run -e CLICKHOUSE_DSN=<clickhouse_dsn> \
+    -e DATABASE_URL=<database_url> \
+    replication \
+    [-only=<table_name>] \
+    [-config=<path>]
 ```

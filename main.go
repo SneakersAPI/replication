@@ -4,6 +4,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -29,7 +30,7 @@ func main() {
 		log.Fatal("Failed to parse config", err)
 	}
 
-	dsn, err := clickhouse.ParseDSN(config.Clickhouse)
+	dsn, err := clickhouse.ParseDSN(os.Getenv("CLICKHOUSE_DSN"))
 	if err != nil {
 		log.WithError(err).Fatal("Failed to parse ClickHouse DSN")
 	}
@@ -40,7 +41,7 @@ func main() {
 	}
 	defer conn.Close()
 
-	db, err := pgxpool.New(ctx, config.Postgres)
+	db, err := pgxpool.New(ctx, os.Getenv("DATABASE_URL"))
 	if err != nil {
 		log.WithError(err).Fatal("Failed to connect to Postgres")
 	}

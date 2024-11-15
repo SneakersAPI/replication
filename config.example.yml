@@ -1,6 +1,4 @@
 batch_size: 10_000 # Number of rows to process at once
-postgres_url: "postgres://postgres:postgres@localhost:5432/postgres" # PostgreSQL DSN
-clickhouse_url: "clickhouse://localhost:9000" # ClickHouse DSN
 tables:
   - source: variants # ClickHouse table name
     destination: variants # PostgreSQL table name

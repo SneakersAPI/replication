@@ -8,10 +8,8 @@ import (
 )
 
 type Config struct {
-	Tables     []Table `yaml:"tables"`
-	BatchSize  int     `yaml:"batch_size"`
-	Postgres   string  `yaml:"postgres_url"`
-	Clickhouse string  `yaml:"clickhouse_url"`
+	Tables    []Table `yaml:"tables"`
+	BatchSize int     `yaml:"batch_size"`
 }
 
 func (c *Config) Parse(path string) error {
